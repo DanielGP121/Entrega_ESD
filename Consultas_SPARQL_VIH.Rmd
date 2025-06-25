@@ -1,0 +1,200 @@
+---
+title: "Informe de Consultas SPARQL: Explotación del Grafo de Conocimiento del VIH-1"
+subtitle: "Práctica de Explotación Semántica de Datos 2024-2025"
+author: "Daniel Gonzalez Palazon"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: united
+    highlight: tango
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE)
+```
+
+## Introducción
+
+Este documento constituye la explotación de un grafo de conocimiento mediante consultas semánticas. El grafo, centrado en la biología del VIH-1, sus proteínas y los fármacos antirretrovirales, se ha cargado previamente en un *triple store* Blazegraph.
+
+A continuación, se presentan 5 consultas SPARQL, ejecutadas desde el script de R, para demostrar la capacidad de extraer información específica del grafo construido.
+
+## Configuración del Entorno
+
+Antes de lanzar las consultas, se carga la librería `SPARQL` para la comunicación con la base de datos y la librería `DT` para la visualización de resultados en tablas interactivas. Se define la variable `endpoint` que apunta a nuestro `namespace` personal en el servidor `dayhoff`.
+
+```{r configuracion}
+# Cargar las librerías 
+if (!require(SPARQL)) {
+  install.packages("SPARQL")
+}
+if (!require(DT)) {
+  install.packages("DT")
+}
+library(SPARQL)
+library(DT)
+
+# Definir el endpoint usando mi puerto asignado (3038) y namespace (kb) (default)
+endpoint <- "http://dayhoff.inf.um.es:3038/blazegraph/namespace/kb/sparql"
+```
+
+---
+
+## Lanzamiento de Consultas SPARQL
+
+### Consulta 1: Trazabilidad Completa desde el Fármaco hasta el Virus
+
+**Pregunta:** Para cada fármaco con diana viral, ¿cuál es su diana, de qué poliproteína precursora deriva dicha diana y qué virus la codifica?
+
+**Técnica demostrada:** Esta consulta demuestra la capacidad de SPARQL para realizar "joins" implícitos a través de una larga cadena de relaciones (`:tieneDianaViral` -> `:derivaDe` -> `:esCodificadaPor`), permitiendo una trazabilidad completa desde un punto del grafo hasta otro muy distante.
+
+```{r consulta1}
+query1 <- "
+  PREFIX : <http://dayhoff.inf.um.es/ontologies/VIH_DGP#>
+  PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+
+  SELECT ?farmaco_label ?diana_label ?precursor_label ?virus_label
+  WHERE {
+    ?farmaco :tieneDianaViral ?diana .
+    ?diana :derivaDe ?precursor .
+    ?precursor :esCodificadaPor ?virus .
+    
+    ?farmaco rdfs:label ?farmaco_label .
+    ?diana rdfs:label ?diana_label .
+    ?precursor rdfs:label ?precursor_label .
+    ?virus rdfs:label ?virus_label .
+  }
+  ORDER BY ?farmaco_label
+"
+resultado1 <- SPARQL(endpoint, query1)
+datatable(resultado1$results, caption = "Tabla 1: Trazabilidad desde el Fármaco hasta el Virus.")
+```
+
+### Consulta 2: Dianas Específicas del Precursor Gag-Pol
+
+**Pregunta:** ¿Qué proteínas que derivan de la poliproteína `Gag_Pol_Precursor` son, además, diana de algún fármaco? Mostrar también su identificador externo en UniProt.
+
+**Técnica demostrada:** Esta consulta combina múltiples condiciones sobre un mismo recurso (`?proteina`). Demuestra cómo filtrar un conjunto de entidades basándose en que deben satisfacer varias relaciones distintas simultáneamente, y cómo recuperar enlaces externos (`owl:sameAs`) para su posterior análisis.
+
+```{r consulta2}
+query2 <- "
+  PREFIX : <http://dayhoff.inf.um.es/ontologies/VIH_DGP#>
+  PREFIX owl: <http://www.w3.org/2002/07/owl#>
+  PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+  PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+
+  SELECT ?proteina_label ?farmaco_label ?precursor_label ?enlace_uniprot
+  WHERE {
+    # Buscamos una proteína que sea diana de un fármaco
+    ?farmaco :tieneDianaViral ?proteina .
+    # Y que esa misma proteína derive de un precursor
+    ?proteina :derivaDe ?precursor .
+    # Nos aseguramos que el precursor es una PoliproteinaViral
+    ?precursor rdf:type :PoliproteinaViral .
+    
+    # Recuperamos el enlace a UniProt usando owl:sameAs
+    ?proteina owl:sameAs ?enlace_uniprot .
+    
+    # Obtenemos las etiquetas para que el resultado sea legible
+    ?proteina rdfs:label ?proteina_label .
+    ?farmaco rdfs:label ?farmaco_label .
+    ?precursor rdfs:label ?precursor_label .
+  }
+  ORDER BY ?proteina_label
+"
+resultado2 <- SPARQL(endpoint, query2)
+datatable(resultado2$results, caption = "Tabla 2: Dianas que derivan de Gag-Pol y sus fármacos asociados.")
+```
+
+### Consulta 3: Fármacos que NO son Inhibidores de Proteasa (Negación)
+
+**Pregunta:** ¿Qué fármacos de nuestro catálogo NO pertenecen a la clase "Inhibidor de Proteasa" (PI)?
+
+**Técnica demostrada:** Se utiliza la inferencia de `rdfs:subClassOf` para identificar a todos los individuos que son fármacos y luego se aplica un `FILTER` para excluir aquellos que pertenecen a una clase específica. Es una consulta de exclusión robusta y clara.
+
+```{r consulta3}
+query3 <- "
+  PREFIX : <http://dayhoff.inf.um.es/ontologies/VIH_DGP#>
+  PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+  PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+
+  SELECT ?farmaco_label ?clase_uri
+  WHERE {
+    # Buscamos cualquier individuo que pertenezca a una subclase de :Farmaco
+    ?farmaco rdf:type ?clase_uri .
+    ?clase_uri rdfs:subClassOf :Farmaco .
+    
+    # Filtramos para quedarnos solo con aquellos cuya clase NO sea :PI
+    FILTER (?clase_uri != :PI)
+
+    # La etiqueta del fármaco es opcional por si alguno no la tuviera
+    OPTIONAL { ?farmaco rdfs:label ?farmaco_label . }
+  }
+  ORDER BY ?clase_uri
+"
+resultado3 <- SPARQL(endpoint, query3)
+datatable(resultado3$results, caption = "Tabla 3: Fármacos que no son Inhibidores de Proteasa.")
+```
+
+### Consulta 4: Dianas de Fármacos Específicos usando `VALUES`
+
+**Pregunta:** Para un conjunto específico de fármacos de interés (Ritonavir y Maraviroc), ¿cuáles son sus dianas y de qué tipo (Viral o Humana)?
+
+**Técnica demostrada:** Introduce la cláusula `VALUES`, una forma muy potente y eficiente de pasar una lista de valores a una consulta. Se combina con `UNION` para buscar en dos propiedades de diana diferentes y con `BIND` para crear una columna descriptiva artificialmente.
+
+```{r consulta4}
+query4 <- "
+  PREFIX : <http://dayhoff.inf.um.es/ontologies/VIH_DGP#>
+  PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+
+  SELECT ?farmaco_label ?tipo_diana ?diana_label
+  WHERE {
+    # Con VALUES especificamos la lista de fármacos que nos interesan
+    VALUES ?farmaco { :Ritonavir :Maraviroc }
+
+    # Usamos UNION para buscar en las dos posibles propiedades de diana
+    { 
+      ?farmaco :tieneDianaViral ?diana .
+      BIND('Viral' AS ?tipo_diana) 
+    }
+    UNION
+    { 
+      ?farmaco :tieneDianaHumana ?diana .
+      BIND('Humana' AS ?tipo_diana)
+    }
+    
+    # Obtenemos las etiquetas para que el resultado sea legible
+    ?farmaco rdfs:label ?farmaco_label .
+    ?diana rdfs:label ?diana_label .
+  }
+"
+resultado4 <- SPARQL(endpoint, query4)
+datatable(resultado4$results, caption = "Tabla 4: Dianas de Fármacos Específicos.")
+```
+
+### Consulta 5: Resumen de Fármacos por Diana Viral (Agregación)
+
+**Pregunta:** ¿Cuántos fármacos diferentes atacan a cada proteína viral de nuestro grafo y cuáles son?
+
+**Técnica demostrada:** Es una consulta de agregación compleja. Utiliza `GROUP BY` para agrupar los resultados por diana, `COUNT` para contar el número de fármacos en cada grupo, y `GROUP_CONCAT` para crear una lista legible de los nombres de dichos fármacos.
+
+```{r consulta5}
+query5 <- "
+  PREFIX : <http://dayhoff.inf.um.es/ontologies/VIH_DGP#>
+  PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+
+  SELECT ?diana_label (COUNT(DISTINCT ?farmaco) AS ?numero_de_farmacos) (GROUP_CONCAT(DISTINCT ?farmaco_label; separator=', ') AS ?lista_farmacos)
+  WHERE {
+    ?farmaco :tieneDianaViral ?diana_viral .
+    ?diana_viral rdfs:label ?diana_label .
+    ?farmaco rdfs:label ?farmaco_label .
+  }
+  GROUP BY ?diana_label
+  ORDER BY DESC(?numero_de_farmacos)
+"
+resultado5 <- SPARQL(endpoint, query5)
+datatable(resultado5$results, caption = "Tabla 5: Resumen de Fármacos por Diana Viral.")
+```

@@ -1,0 +1,21 @@
+version: "3"
+services:
+    linked_data_server:
+      image: ghcr.io/zazuko/trifid
+      ports:
+          - "8178:8080" 
+      environment:
+          # Apunta al namespace default kb, al que subir mi ontologia
+          SPARQL_ENDPOINT_URL: "http://sparql_endpoint:9999/blazegraph/namespace/kb/sparql"
+          
+          # Coincide con la URI base de la ontología
+          DATASET_BASE_URL: "http://dayhoff.inf.um.es/ontologies/VIH_DGP#"
+
+    sparql_endpoint:
+      image: blazegraph
+      ports:
+          - "3038:9999" 
+
+
+
+         
